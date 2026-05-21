@@ -1,0 +1,254 @@
+.container {
+  background: #1c1c1f;
+  width: 100%;
+  max-width: 800px;
+  padding: 30px;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  border: 1px solid #2d2d31;
+  margin: 20px auto;
+}
+
+.title {
+  color: #60a5fa;
+  text-align: center;
+  margin-bottom: 5px;
+  font-size: 24px;
+}
+
+.subtitle {
+  text-align: center;
+  color: #a1a1aa;
+  font-size: 14px;
+  margin-bottom: 25px;
+}
+
+.controlPanel {
+  background: #232326;
+  padding: 20px;
+  border-radius: 12px;
+  margin-bottom: 25px;
+  border: 1px solid #2d2d31;
+}
+
+.topControls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 15px;
+}
+
+.playBtn {
+  background: #22c55e;
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: bold;
+  padding: 12px 30px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: 140px;
+  text-align: center;
+}
+
+.playBtn:active {
+  transform: scale(0.95);
+}
+
+.playBtnPaused {
+  background: #facc15;
+  color: #1c1c1f;
+}
+
+.toggles {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+
+.toggleGroup {
+  display: flex;
+  background: #141416;
+  border-radius: 8px;
+  border: 1px solid #3f3f46;
+  overflow: hidden;
+}
+
+.toggleLabel {
+  padding: 8px 15px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #a1a1aa;
+  border-right: 1px solid #3f3f46;
+  transition: all 0.2s;
+}
+
+.toggleLabel:last-child {
+  border-right: none;
+}
+
+.toggleLabelActive {
+  background: #3b82f6;
+  color: #ffffff;
+  font-weight: bold;
+}
+
+.toggleLabelAnswer {
+  background: #8b5cf6;
+  color: #ffffff;
+  font-weight: bold;
+}
+
+.sliders {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.sliderItem {
+  display: flex;
+  flex-direction: column;
+}
+
+.sliderItem label {
+  font-size: 13px;
+  margin-bottom: 8px;
+  color: #d4d4d8;
+  display: flex;
+  justify-content: space-between;
+}
+
+.sliderItem label span {
+  color: #60a5fa;
+  font-weight: bold;
+}
+
+.sliderItem input[type='range'] {
+  width: 100%;
+  accent-color: #60a5fa;
+  cursor: pointer;
+}
+
+.displayPanel {
+  background: #141416;
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  margin-bottom: 20px;
+  border: 1px solid #2d2d31;
+  min-height: 250px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  position: relative;
+}
+
+.statusBadge {
+  position: absolute;
+  top: 15px;
+  left: 20px;
+  font-size: 12px;
+  font-weight: bold;
+  padding: 4px 10px;
+  border-radius: 12px;
+  letter-spacing: 1px;
+}
+
+.statusPlaying {
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.statusPaused {
+  color: #facc15;
+  border: 1px solid rgba(250, 204, 21, 0.3);
+  background: rgba(250, 204, 21, 0.1);
+}
+
+.targetString {
+  font-size: 20px;
+  color: #a1a1aa;
+  margin-bottom: 10px;
+}
+
+.targetNote {
+  font-size: 64px;
+  font-weight: bold;
+  color: #ffffff;
+  margin-bottom: 10px;
+  text-shadow: 0 0 20px rgba(255, 255, 255, 0.2);
+}
+
+.answerDisplay {
+  font-size: 24px;
+  font-weight: bold;
+  color: #8b5cf6;
+  height: 35px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.answerVisible {
+  opacity: 1;
+}
+
+.progressContainer {
+  width: 100%;
+  height: 6px;
+  background: #27272a;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 20px;
+}
+
+.progressBar {
+  height: 100%;
+  width: 100%;
+  border-radius: 3px;
+}
+
+.barThink {
+  background: #60a5fa;
+}
+
+.barAnswer {
+  background: #8b5cf6;
+}
+
+.hotkeyHints {
+  display: flex;
+  justify-content: center;
+  gap: 15px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+  font-size: 12px;
+  color: #71717a;
+}
+
+.hotkeyHints span {
+  background: #232326;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #3f3f46;
+}
+
+.kbd {
+  font-family: monospace;
+  color: #d4d4d8;
+  font-weight: bold;
+}
+
+.backLink {
+  display: inline-block;
+  margin-bottom: 15px;
+  color: #a1a1aa;
+  font-size: 14px;
+}
+
+.backLink:hover {
+  color: #ffffff;
+}
