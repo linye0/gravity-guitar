@@ -68,3 +68,32 @@ export function playTone(ctx: AudioContext, freq: number, startTime: number, dur
   osc.start(startTime);
   osc.stop(startTime + durationSeconds);
 }
+
+export function playPianoNote(ctx: AudioContext, freq: number, startTime: number, durationSeconds: number) {
+  const masterGain = ctx.createGain();
+  masterGain.gain.setValueAtTime(0, startTime);
+  masterGain.gain.linearRampToValueAtTime(0.55, startTime + 0.003);
+  masterGain.gain.exponentialRampToValueAtTime(0.25, startTime + 0.04);
+  masterGain.gain.exponentialRampToValueAtTime(0.12, startTime + 0.25);
+  masterGain.gain.exponentialRampToValueAtTime(0.001, startTime + durationSeconds);
+  masterGain.connect(ctx.destination);
+
+  const partials: { mult: number; gain: number }[] = [
+    { mult: 1, gain: 0.6 },
+    { mult: 2, gain: 0.25 },
+    { mult: 3, gain: 0.10 },
+    { mult: 4, gain: 0.04 },
+  ];
+
+  for (const p of partials) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq * p.mult;
+    g.gain.value = p.gain;
+    osc.connect(g);
+    g.connect(masterGain);
+    osc.start(startTime);
+    osc.stop(startTime + durationSeconds);
+  }
+}

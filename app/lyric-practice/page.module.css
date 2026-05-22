@@ -285,3 +285,55 @@
 .backLink:hover {
   color: #ffffff;
 }
+
+.staffArea {
+  background: #efe8d8;
+  padding: 28px 24px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  min-height: 150px;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.staffArea :global(svg) {
+  display: block;
+  margin: 0 auto;
+  filter: contrast(1.8) brightness(0.85);
+}
+
+/* force everything dark */
+.staffArea :global(svg *),
+.staffArea :global(svg line),
+.staffArea :global(svg path),
+.staffArea :global(svg polyline),
+.staffArea :global(svg rect) {
+  stroke: #1a1a1a !important;
+  stroke-width: 2px !important;
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+}
+
+/* notes stay opaque dark */
+.staffArea :global(svg .abcjs-note),
+.staffArea :global(svg .abcjs-rest) {
+  fill: #111 !important;
+  stroke: #111 !important;
+}
+
+/* text (accidentals, etc.) */
+.staffArea :global(svg text) {
+  fill: #111 !important;
+  font-weight: bold !important;
+  font-size: 13px !important;
+  stroke: none !important;
+}
+
+.staffArea :global(svg .abcjs-note-accidental) {
+  fill: #111 !important;
+  stroke: none !important;
+}
+
+.staffArea :global(path.abcjs-note) {
+  fill: #222 !important;
+  stroke: #222 !important;
+}

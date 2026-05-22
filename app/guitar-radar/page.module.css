@@ -102,6 +102,12 @@
   font-weight: bold;
 }
 
+.toggleLabelAudio {
+  background: #22c55e;
+  color: #ffffff;
+  font-weight: bold;
+}
+
 .sliders {
   display: grid;
   grid-template-columns: 1fr 1fr;

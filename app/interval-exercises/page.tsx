@@ -18,7 +18,7 @@ export default function IntervalExercisesPage() {
   const [useReferenceDo, setUseReferenceDo] = useState(true);
   const [reactionMs, setReactionMs] = useState(1200);
   const [singingMs, setSingingMs] = useState(2000);
-  const [activeNoteIds, setActiveNoteIds] = useState([0, 2, 4, 5, 7]);
+  const [activeNoteIds, setActiveNoteIds] = useState([0, 2, 4, 5, 7, 9, 11]);
   const [switchInterval, setSwitchInterval] = useState(5);
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -49,6 +49,8 @@ export default function IntervalExercisesPage() {
   const isPausedRef = useRef(false);
   const currentTargetOctaveMulRef = useRef(2);
   const currentTargetFreqRef = useRef(0);
+  const currentTargetIdRef = useRef<number | null>(null);
+  const handleTimeoutExceededRef = useRef<() => void>(() => {});
 
   isPausedRef.current = isPaused;
 
@@ -166,6 +168,7 @@ export default function IntervalExercisesPage() {
     }
 
     setCurrentTargetId(targetId);
+    currentTargetIdRef.current = targetId;
     setCtxState('REACTION');
     setStatusText('听音预测中...');
 
@@ -190,7 +193,7 @@ export default function IntervalExercisesPage() {
 
     startProgressBar('reaction', reactionMs);
     stateTimeoutRef.current = setTimeout(() => {
-      handleTimeoutExceeded();
+      handleTimeoutExceededRef.current();
     }, reactionMs);
   }, [mode, activeNoteIds, register, rootIndex, droneOctave, reactionMs, startProgressBar, setButtonsDisabled, switchInterval]);
 
@@ -200,13 +203,15 @@ export default function IntervalExercisesPage() {
     setCtxState('SINGING');
     setButtonsDisabled(true);
     setStatusText('⏱ 思考超时！');
-    const targetInterval = currentTargetId !== null ? INTERVAL_DATA.find((n) => n.id === currentTargetId) : null;
+    const targetInterval = currentTargetIdRef.current !== null ? INTERVAL_DATA.find((n) => n.id === currentTargetIdRef.current) : null;
     if (targetInterval) {
-      setFeedbackText(`答案是: [ ${targetInterval.name} ] - 算力太慢，听声音刻录！`);
+      setFeedbackText(`答案是: [ ${targetInterval.name} ] - 听声音`);
       setFlashMap({ [targetInterval.id]: 'correct' });
     }
     enterSingingPhaseCooldown();
-  }, [currentTargetId]);
+  }, []);
+
+  handleTimeoutExceededRef.current = handleTimeoutExceeded;
 
   const enterSingingPhaseCooldown = useCallback(() => {
     const duration = singingMs;
@@ -248,21 +253,22 @@ export default function IntervalExercisesPage() {
       setCtxState('SINGING');
       setButtonsDisabled(true);
 
-      if (chosenId === currentTargetId) {
+      const tid = currentTargetIdRef.current;
+      if (chosenId === tid) {
         setStatusText('✓ 直觉正确！');
-        const targetInterval = INTERVAL_DATA.find((n) => n.id === currentTargetId);
-        setFeedbackText(`目标正是: [ ${targetInterval?.name} ] - 请大声跟唱！`);
+        const targetInterval = INTERVAL_DATA.find((n) => n.id === tid);
+        setFeedbackText(`目标正是: [ ${targetInterval?.name} ] - 请跟唱`);
         setFlashMap({ [chosenId]: 'correct' });
       } else {
         setStatusText('✗ 色彩跑偏！');
-        const targetInterval = INTERVAL_DATA.find((n) => n.id === currentTargetId);
-        setFeedbackText(`那是: [ ${targetInterval?.name} ] - 听正确的声音，强行发声矫正！`);
-        setFlashMap({ [chosenId]: 'wrong', [currentTargetId!]: 'correct' });
+        const targetInterval = INTERVAL_DATA.find((n) => n.id === tid);
+        setFeedbackText(`那是: [ ${targetInterval?.name} ] - 发声矫正`);
+        setFlashMap({ [chosenId]: 'wrong', [tid!]: 'correct' });
       }
 
       enterSingingPhaseCooldown();
     },
-    [ctxState, isPaused, currentTargetId, clearTimers, setButtonsDisabled, enterSingingPhaseCooldown]
+    [ctxState, isPaused, clearTimers, setButtonsDisabled, enterSingingPhaseCooldown]
   );
 
   const initiateKeyTransition = useCallback(() => {
@@ -276,8 +282,8 @@ export default function IntervalExercisesPage() {
     while (newIdx === rootIndex) newIdx = Math.floor(Math.random() * 12);
     updateRootNote(newIdx);
 
-    setStatusText('⚠️ 坐标系跃迁中...');
-    setRegBadgeText('靶区: 锁定中');
+    setStatusText('⚠️ 目标音移动...');
+    setRegBadgeText('锁定中');
 
     let countdown = 3;
     startProgressBar('transition', 3000);
@@ -326,7 +332,7 @@ export default function IntervalExercisesPage() {
     isTransitioningRef.current = false;
     forceRootNextRef.current = false;
     setRoundsCounter(0);
-    setStatusText('🚀 引力引擎轰鸣中');
+    setStatusText('🚀 运行中');
 
     updateRootNote(initialRoot);
     setTimeout(() => triggerNextCycle(), 100);
@@ -446,11 +452,11 @@ export default function IntervalExercisesPage() {
       </Link>
 
       <div className={styles.container}>
-        <h1 className={styles.title}>调性引力场练耳器</h1>
-        <div className={styles.subtitle}>全面修复全局背景音静音逻辑与原点(Do)的高频音色映射</div>
+        <h1 className={styles.title}>持续根音练耳器</h1>
+        <div className={styles.subtitle}>训练目标音与原点(Do)的音程条件反射</div>
 
         <div className={styles.controlPanel}>
-          <div className={styles.sectionTitle}>调性锚点与音区引擎 (Context & Engine)</div>
+          <div className={styles.sectionTitle}>调性与目标音设置</div>
 
           <div className={styles.keyControl} style={{ marginBottom: 10 }}>
             <div className={styles.radioGroup}>
@@ -522,7 +528,7 @@ export default function IntervalExercisesPage() {
                   value={switchInterval}
                   min={1}
                   max={50}
-                  onChange={(e) => setSwitchInterval(parseInt(e.target.value) || 5)}
+                  onChange={(e) => setSwitchInterval(parseInt(e.target.value) || 10)}
                 />
                 <label>次切换调性</label>
               </div>
@@ -571,17 +577,17 @@ export default function IntervalExercisesPage() {
                 checked={useReferenceDo}
                 onChange={(e) => setUseReferenceDo(e.target.checked)}
               />
-              开启握手校准：跟唱时，先播报原点 1 (Do)，再播报目标音
+              音程校准：跟唱时，先播报原点 1 (Do)，再播报目标音
             </label>
           </div>
 
           <div className={styles.sectionTitle} style={{ marginTop: 20 }}>
-            压力与时间参数 (Stress Control)
+            限时设置
           </div>
           <div className={styles.sliders}>
             <div className={styles.sliderItem}>
               <label>
-                极限思考反应窗口: <span>{reactionMs}</span> ms
+                反应窗口: <span>{reactionMs}</span> ms
               </label>
               <input
                 type="range"
@@ -594,7 +600,7 @@ export default function IntervalExercisesPage() {
             </div>
             <div className={styles.sliderItem}>
               <label>
-                神圣跟唱物理刻录期: <span>{singingMs}</span> ms
+                跟唱时间: <span>{singingMs}</span> ms
               </label>
               <input
                 type="range"
@@ -634,7 +640,7 @@ export default function IntervalExercisesPage() {
             onClick={startTrainer}
             disabled={isRunning}
           >
-            {isRunning ? '🚀 引力引擎轰鸣中' : '▶ 启动引力场引擎'}
+            {isRunning ? '🚀 运行中' : '▶ 启动'}
           </button>
           <button
             className={styles.pauseBtn}

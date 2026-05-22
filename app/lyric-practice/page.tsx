@@ -2,30 +2,62 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import abcjs from 'abcjs';
 import { PITCH_SPACE } from '@/lib/notes';
-import { getAudioContext, playTone } from '@/lib/audio';
+import { getAudioContext, playPianoNote, clearOscillators } from '@/lib/audio';
 import styles from './page.module.css';
 
-type GridData = { active: boolean; length: number }[][];
+// --- 1. 底层数据结构定义 (AST) ---
+export type NoteDuration = '1' | '2' | '4' | '8' | '16';
 
-const BEATS = 8;
+export interface MusicEvent {
+  id: string;
+  type: 'note' | 'rest';
+  pitchOffset?: number; 
+  duration: NoteDuration;
+}
+
+export type Measure = MusicEvent[];
+
+// 时值映射字典（以 16 分音符为基准单位 1）
+const DURATION_UNITS: Record<NoteDuration, number> = {
+  '1': 16, // 全音符 = 16 个 16分音符
+  '2': 8,  // 二分音符 = 8 个 16分音符
+  '4': 4,  // 四分音符 = 4 个 16分音符
+  '8': 2,  // 八分音符 = 2 个 16分音符
+  '16': 1  // 十六分音符 = 1 个 16分音符
+};
+
+const TOTAL_MEASURES = 4;
+const MEASURE_CAPACITY = 16; // 4/4 拍
 
 export default function LyricPracticePage() {
+  // --- 2. 核心状态管理 ---
   const [viewMode, setViewMode] = useState<'chromatic' | 'major' | 'minor'>('major');
   const [keyNote, setKeyNote] = useState(261.63);
-  const [bpm, setBpm] = useState(95);
-  const [stepsPerBeat, setStepsPerBeat] = useState(2);
-  const [minRange, setMinRange] = useState(-5);
-  const [maxRange, setMaxRange] = useState(16);
+  
+  // 编辑器状态
+  const [measures, setMeasures] = useState<Measure[]>(Array.from({ length: TOTAL_MEASURES }, () => []));
+  const [currentMeasureIdx, setCurrentMeasureIdx] = useState(0);
+  const [inputDuration, setInputDuration] = useState<NoteDuration>('4'); // 默认输入四分音符
+  const [pitchMin, setPitchMin] = useState(0);
+  const [pitchMax, setPitchMax] = useState(7);
 
-  const steps = BEATS * stepsPerBeat;
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const isPlayingRef = useRef(false);
-  const currentStepRef = useRef(0);
-  const nextNoteTimeRef = useRef(0);
-  const timerIdRef = useRef<number | null>(null);
-  const hoveredCellRef = useRef<{ row: number; col: number } | null>(null);
+  const paperRef = useRef<HTMLDivElement>(null);
+  const playbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [bpm, setBpm] = useState(80);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [beginnerRhythm, setBeginnerRhythm] = useState(false);
 
+  const playCursorRef = useRef(-1);
+  const isPausedInternalRef = useRef(false);
+  const playTimeoutsRef = useRef<NodeJS.Timeout[]>([]);
+  const currentMeasureIdxRef = useRef(0);
+
+  currentMeasureIdxRef.current = currentMeasureIdx;
+
+  // 过滤显示的音高
   const visiblePitches = useMemo(() => {
     return PITCH_SPACE.filter((p) => {
       if (viewMode === 'major') return p.isMajor;
@@ -34,407 +66,439 @@ export default function LyricPracticePage() {
     });
   }, [viewMode]);
 
-  const [gridData, setGridData] = useState<GridData>(() =>
-    PITCH_SPACE.map(() => Array(steps).fill(null).map(() => ({ active: false, length: 1 })))
-  );
-  const gridRef = useRef(gridData);
-  gridRef.current = gridData;
+  const pitchRows = useMemo(() => {
+    const all = visiblePitches;
+    return {
+      high: all.filter(p => p.offset >= 12).reverse(),
+      mid: all.filter(p => p.offset >= 0 && p.offset < 12).reverse(),
+      low: all.filter(p => p.offset < 0).reverse(),
+    };
+  }, [visiblePitches]);
 
-  const [playingCol, setPlayingCol] = useState<number | null>(null);
+  // --- 3. AST 到 ABC 字符串的编译引擎 ---
+  const abcString = useMemo(() => {
+    // 基础乐谱配置：4/4拍，默认十六分音符为最小书写单位
+    let abcStr = `X:1\nM:4/4\nL:1/16\nK:C\n%%stretchstaff\n`;
 
-  useEffect(() => {
-    const newSteps = BEATS * stepsPerBeat;
-    setGridData((prev) =>
-      PITCH_SPACE.map((_, rowIdx) =>
-        Array(newSteps)
-          .fill(null)
-          .map((_, colIdx) => prev[rowIdx]?.[colIdx] || { active: false, length: 1 })
-      )
-    );
-  }, [stepsPerBeat]);
+    const getAbcPitch = (offset: number) => {
+      const notes = ['C', '^C', 'D', '^D', 'E', 'F', '^F', 'G', '^G', 'A', '^A', 'B'];
+      const octave = Math.floor(offset / 12);
+      const noteClass = notes[(offset % 12 + 12) % 12];
+      
+      if (octave === 0) return noteClass;
+      if (octave === 1) return noteClass.toLowerCase();
+      if (octave > 1) return noteClass.toLowerCase() + "'".repeat(octave - 1);
+      if (octave < 0) return noteClass + ",".repeat(Math.abs(octave));
+      return noteClass;
+    };
 
-  const initRangeSelectors = useCallback(() => {
-    setMinRange(-5);
-    setMaxRange(16);
-  }, []);
-
-  useEffect(() => {
-    initRangeSelectors();
-  }, [initRangeSelectors]);
-
-  const toggleCell = useCallback((rowIdx: number, colIdx: number) => {
-    setGridData((prev) => {
-      const next = prev.map((row) => row.map((cell) => ({ ...cell })));
-      next[rowIdx][colIdx].active = !next[rowIdx][colIdx].active;
-      if (next[rowIdx][colIdx].active) next[rowIdx][colIdx].length = 1;
-      return next;
+    measures.forEach((measure, idx) => {
+      let measureStr = '';
+      measure.forEach(ev => {
+        const len = DURATION_UNITS[ev.duration];
+        if (ev.type === 'rest') {
+          measureStr += `z${len} `;
+        } else {
+          measureStr += `${getAbcPitch(ev.pitchOffset!)}${len} `;
+        }
+      });
+      
+      abcStr += measureStr + '| ';
     });
-  }, []);
 
-  const paintCell = useCallback((rowIdx: number, colIdx: number) => {
-    setGridData((prev) => {
-      const next = prev.map((row) => row.map((cell) => ({ ...cell })));
-      if (!next[rowIdx][colIdx].active) {
-        next[rowIdx][colIdx].active = true;
-        next[rowIdx][colIdx].length = 1;
+    return abcStr;
+  }, [measures]);
+
+  // --- 4. 实时渲染五线谱副作用 ---
+  useEffect(() => {
+    if (paperRef.current) {
+      abcjs.renderAbc(paperRef.current, abcString, {
+        responsive: 'resize',
+        add_classes: true,
+        staffwidth: 900,
+        selectTypes: false,
+      });
+    }
+  }, [abcString]);
+
+  // --- 5. 核心交互：输入校检与写入 ---
+  const handleInputEvent = useCallback((type: 'note' | 'rest', pitchOffset?: number) => {
+    setMeasures(prev => {
+      const idx = currentMeasureIdxRef.current;
+      const next = [...prev];
+      let targetMeasure = next[idx];
+      
+      // 计算当前小节已用容量
+      const usedCapacity = targetMeasure.reduce((sum, ev) => sum + DURATION_UNITS[ev.duration], 0);
+      const incomingCapacity = DURATION_UNITS[inputDuration];
+
+      if (usedCapacity + incomingCapacity > MEASURE_CAPACITY) {
+        // 当前小节塞不下，尝试移动到下一个小节
+        if (idx < TOTAL_MEASURES - 1) {
+          setCurrentMeasureIdx(idx + 1);
+          next[idx + 1] = [...next[idx + 1], {
+            id: Math.random().toString(36).substr(2, 9),
+            type,
+            pitchOffset,
+            duration: inputDuration
+          }];
+        } else {
+          console.warn("乐谱已满，无法继续输入");
+        }
+      } else {
+        // 正常写入当前小节
+        next[idx] = [...targetMeasure, {
+          id: Math.random().toString(36).substr(2, 9),
+          type,
+          pitchOffset,
+          duration: inputDuration
+        }];
+        
+        // 如果刚好填满，自动跳到下一小节
+        if (usedCapacity + incomingCapacity === MEASURE_CAPACITY && idx < TOTAL_MEASURES - 1) {
+          setCurrentMeasureIdx(idx + 1);
+        }
       }
       return next;
     });
-  }, []);
+  }, [inputDuration]);
 
-  const adjustNoteLength = useCallback((delta: number) => {
-    const cell = hoveredCellRef.current;
-    if (!cell) return;
-    setGridData((prev) => {
-      const next = prev.map((row) => row.map((c) => ({ ...c })));
-      const data = next[cell.row][cell.col];
-      if (data.active) {
-        data.length += delta;
-        if (data.length < 1) data.length = 1;
-        const maxLen = BEATS * (prev[0]?.length ? prev[0].length / BEATS : 2) - cell.col;
-        if (data.length > maxLen) data.length = maxLen;
+  // 退格删除逻辑
+  const handleBackspace = useCallback(() => {
+    setMeasures(prev => {
+      const idx = currentMeasureIdxRef.current;
+      const next = [...prev];
+      if (next[idx].length > 0) {
+        next[idx] = next[idx].slice(0, -1);
+      } else if (idx > 0) {
+        setCurrentMeasureIdx(idx - 1);
+        next[idx - 1] = next[idx - 1].slice(0, -1);
       }
       return next;
     });
   }, []);
 
   const clearGrid = useCallback(() => {
-    setGridData((prev) => prev.map((row) => row.map(() => ({ active: false, length: 1 }))));
+    setMeasures(Array.from({ length: TOTAL_MEASURES }, () => []));
+    setCurrentMeasureIdx(0);
   }, []);
 
-  const generateRandomExercise = useCallback(() => {
-    setGridData((prev) => {
-      const next = prev.map((row) => row.map(() => ({ active: false, length: 1 })));
+  const generateRandomSequence = useCallback(() => {
+    const newMeasures: Measure[] = Array.from({ length: TOTAL_MEASURES }, () => []);
+    const availableDurs: NoteDuration[] = beginnerRhythm ? ['4'] : ['4', '8', '16'];
+    const candidates: number[] = [];
+    for (let o = pitchMin; o <= pitchMax; o++) {
+      if (visiblePitches.some(p => p.offset === o)) {
+        candidates.push(o);
+      }
+    }
 
-      const realMin = Math.min(minRange, maxRange);
-      const realMax = Math.max(minRange, maxRange);
+    for (let m = 0; m < TOTAL_MEASURES; m++) {
+      let cap = MEASURE_CAPACITY;
+      while (cap > 0) {
+        const possible = availableDurs.filter(d => DURATION_UNITS[d] <= cap);
+        if (possible.length === 0) break;
+        const dur = possible[Math.floor(Math.random() * possible.length)];
+        const durSize = DURATION_UNITS[dur];
 
-      const availableRowIndices: number[] = [];
-      PITCH_SPACE.forEach((pitch, idx) => {
-        if (viewMode === 'major' && !pitch.isMajor) return;
-        if (viewMode === 'minor' && !pitch.isMinor) return;
-        if (pitch.offset < realMin || pitch.offset > realMax) return;
-        availableRowIndices.push(idx);
-      });
+        const isFirst = m === 0 && newMeasures.every(meas => meas.length === 0);
+        const pitchOffset = isFirst ? 0 : candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : 0;
 
-      const fallbackIndices = availableRowIndices.length > 0 ? availableRowIndices : [];
-      if (availableRowIndices.length === 0) {
-        PITCH_SPACE.forEach((pitch, idx) => {
-          if (viewMode === 'major' && !pitch.isMajor) return;
-          if (viewMode === 'minor' && !pitch.isMinor) return;
-          availableRowIndices.push(idx);
+        newMeasures[m].push({
+          id: Math.random().toString(36).substr(2, 9),
+          type: 'note',
+          pitchOffset,
+          duration: dur,
         });
+        cap -= durSize;
       }
+    }
 
-      const totalSteps = next[0].length;
-      const doRowIdx = PITCH_SPACE.findIndex((p) => p.offset === 0);
+    setMeasures(newMeasures);
+    setCurrentMeasureIdx(0);
+  }, [pitchMin, pitchMax, visiblePitches, beginnerRhythm]);
 
-      if (doRowIdx !== -1 && availableRowIndices.includes(doRowIdx)) {
-        next[doRowIdx][0].active = true;
-        next[doRowIdx][0].length = 1;
-      }
+  const clearAllTimeouts = useCallback(() => {
+    for (const t of playTimeoutsRef.current) clearTimeout(t);
+    playTimeoutsRef.current = [];
+  }, []);
 
-      let lastRowIdx =
-        doRowIdx !== -1 && availableRowIndices.includes(doRowIdx)
-          ? doRowIdx
-          : availableRowIndices[Math.floor(availableRowIndices.length / 2)];
-
-      for (let col = 1; col < totalSteps; col++) {
-        if (Math.random() < 0.2) continue;
-
-        let candidates = availableRowIndices.filter((idx) => {
-          const curOff = PITCH_SPACE[idx].offset;
-          const lastOff = PITCH_SPACE[lastRowIdx].offset;
-          return Math.abs(curOff - lastOff) <= 7;
-        });
-
-        if (candidates.length === 0) candidates = availableRowIndices;
-
-        const randIdx = candidates[Math.floor(Math.random() * candidates.length)];
-        next[randIdx][col].active = true;
-        next[randIdx][col].length = 1;
-        lastRowIdx = randIdx;
-      }
-
-      return next;
+  const clearNoteHighlight = useCallback(() => {
+    paperRef.current?.querySelectorAll('.abcjs-note').forEach(el => {
+      (el as HTMLElement).style.removeProperty('filter');
+      (el as HTMLElement).style.removeProperty('fill');
+      (el as HTMLElement).style.removeProperty('stroke');
     });
-  }, [viewMode, minRange, maxRange]);
+  }, []);
 
-  const scheduleNote = useCallback(() => {
-    const secondsPerBeat = 60.0 / bpm;
-    const stepDuration = secondsPerBeat / stepsPerBeat;
-    const ctx = audioCtxRef.current;
-    if (!ctx) return;
-
-    setPlayingCol(currentStepRef.current);
-
-    const totalSteps = gridRef.current[0].length;
-    for (let row = 0; row < PITCH_SPACE.length; row++) {
-      const cellData = gridRef.current[row]?.[currentStepRef.current];
-      if (cellData?.active) {
-        const duration = stepDuration * cellData.length;
-        const pitch = PITCH_SPACE[row];
-        const freq = keyNote * Math.pow(2, pitch.offset / 12);
-        playTone(ctx, freq, nextNoteTimeRef.current, duration);
-      }
+  const highlightNote = useCallback((idx: number) => {
+    clearNoteHighlight();
+    const els = paperRef.current?.querySelectorAll<HTMLElement>('.abcjs-note');
+    if (els && els[idx]) {
+      els[idx].style.setProperty('filter', 'drop-shadow(0 0 6px #a855f7) brightness(1.3)', 'important');
+      els[idx].style.setProperty('fill', '#a855f7', 'important');
+      els[idx].style.setProperty('stroke', '#a855f7', 'important');
     }
+  }, [clearNoteHighlight]);
 
-    nextNoteTimeRef.current += stepDuration;
-    currentStepRef.current = (currentStepRef.current + 1) % totalSteps;
-  }, [bpm, stepsPerBeat, keyNote]);
-
-  const scheduler = useCallback(() => {
-    const ctx = audioCtxRef.current;
-    if (!ctx) return;
-    while (nextNoteTimeRef.current < ctx.currentTime + 0.1) {
-      scheduleNote();
-    }
-    timerIdRef.current = requestAnimationFrame(scheduler);
-  }, [scheduleNote]);
-
-  const togglePlay = useCallback(() => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = getAudioContext();
-    }
+  const scheduleFrom = useCallback((startIdx: number) => {
+    if (!audioCtxRef.current) audioCtxRef.current = getAudioContext();
     const ctx = audioCtxRef.current;
     if (ctx.state === 'suspended') ctx.resume();
 
-    if (isPlayingRef.current) {
-      if (timerIdRef.current) cancelAnimationFrame(timerIdRef.current);
-      isPlayingRef.current = false;
-      setPlayingCol(null);
-    } else {
-      isPlayingRef.current = true;
-      currentStepRef.current = 0;
-      nextNoteTimeRef.current = ctx.currentTime + 0.05;
-      scheduler();
+    const plan: { offset: number; durMs: number }[] = [];
+    const unitMs = 60000 / bpm / 4;
+    for (const measure of measures) {
+      for (const ev of measure) {
+        const durMs = DURATION_UNITS[ev.duration] * unitMs;
+        plan.push({ offset: ev.type === 'note' && ev.pitchOffset !== undefined ? ev.pitchOffset : -1, durMs });
+      }
     }
-  }, [scheduler]);
 
-  useEffect(() => {
-    const handleKeydown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && e.target instanceof HTMLElement && e.target.tagName !== 'INPUT') {
-        e.preventDefault();
-        togglePlay();
+    let idx = startIdx;
+    const tick = () => {
+      if (isPausedInternalRef.current) return;
+      if (idx >= plan.length) {
+        setIsPlaying(false);
+        setIsPaused(false);
+        playCursorRef.current = -1;
+        return;
       }
-      if (hoveredCellRef.current) {
-        const cell = hoveredCellRef.current;
-        const data = gridRef.current[cell.row]?.[cell.col];
-        if (data?.active) {
-          if (e.key === '+' || e.key === '=') adjustNoteLength(1);
-          if (e.key === '-' || e.key === '_') adjustNoteLength(-1);
-        }
+      const ev = plan[idx];
+      playCursorRef.current = idx;
+      highlightNote(idx);
+      if (ev.offset >= 0) {
+        const freq = keyNote * Math.pow(2, ev.offset / 12);
+        playPianoNote(ctx, freq, ctx.currentTime, ev.durMs / 1000);
       }
+      const tid = setTimeout(tick, ev.durMs);
+      playTimeoutsRef.current.push(tid);
+      idx++;
     };
-    window.addEventListener('keydown', handleKeydown);
-    return () => window.removeEventListener('keydown', handleKeydown);
-  }, [togglePlay, adjustNoteLength]);
+    tick();
+  }, [measures, bpm, keyNote, highlightNote]);
 
-  useEffect(() => {
-    const handleWheel = (e: WheelEvent) => {
-      if (hoveredCellRef.current) {
-        const cell = hoveredCellRef.current;
-        const data = gridRef.current[cell.row]?.[cell.col];
-        if (data?.active) {
-          e.preventDefault();
-          adjustNoteLength(e.deltaY < 0 ? 1 : -1);
-        }
-      }
-    };
-    window.addEventListener('wheel', handleWheel, { passive: false });
-    return () => window.removeEventListener('wheel', handleWheel);
-  }, [adjustNoteLength]);
+  const startPlayback = useCallback(() => {
+    setIsPaused(false);
+    isPausedInternalRef.current = false;
+    playCursorRef.current = -1;
+    if (!audioCtxRef.current) audioCtxRef.current = getAudioContext();
+    const ctx = audioCtxRef.current;
+    if (ctx.state === 'suspended') ctx.resume();
+    setIsPlaying(true);
+    scheduleFrom(0);
+  }, [scheduleFrom]);
 
-  useEffect(() => {
-    return () => {
-      if (timerIdRef.current) cancelAnimationFrame(timerIdRef.current);
-    };
-  }, []);
+  const togglePause = useCallback(() => {
+    if (isPaused) {
+      setIsPaused(false);
+      isPausedInternalRef.current = false;
+      scheduleFrom(playCursorRef.current + 1);
+    } else {
+      setIsPaused(true);
+      isPausedInternalRef.current = true;
+      clearAllTimeouts();
+      clearOscillators({ current: [] });
+      clearNoteHighlight();
+    }
+  }, [isPaused, scheduleFrom, clearAllTimeouts, clearNoteHighlight]);
 
-  const totalSteps = steps;
-  const startIdx = PITCH_SPACE.findIndex((p) => p.offset === 0);
+  const stopPlayback = useCallback(() => {
+    clearAllTimeouts();
+    clearOscillators({ current: [] });
+    clearNoteHighlight();
+    setIsPlaying(false);
+    setIsPaused(false);
+    isPausedInternalRef.current = false;
+    playCursorRef.current = -1;
+  }, [clearAllTimeouts, clearNoteHighlight]);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        minHeight: '100vh',
-        padding: '20px',
-        userSelect: 'none',
-        overflowX: 'hidden',
-      }}
-    >
-      <Link href="/" className={styles.backLink}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', padding: '20px', background: '#1c1c1f' }}>
+      <Link href="/" className={styles.backLink} style={{ color: '#a1a1aa', marginBottom: 20 }}>
         ← 返回首页
       </Link>
 
-      <div className={styles.container}>
-        <h1 className={styles.title}>视唱生成与练耳控制台 (音域受控版)</h1>
-        <div className={styles.subtitle}>底层维护十二平均律，支持特定调式过滤与动态随机出题音域裁剪</div>
+      <div className={styles.container} style={{ width: '100%', maxWidth: 1150, background: '#232326', padding: 20, borderRadius: 12 }}>
+        <h1 className={styles.title} style={{ color: '#4ade80', textAlign: 'center' }}>视唱五线谱编辑器</h1>
+        <div style={{ color: '#a1a1aa', textAlign: 'center', marginBottom: 20, fontSize: 14 }}>基于抽象语法树 (AST) 的线性输入引擎</div>
 
-        <div className={styles.topControls}>
-          <div className={styles.settingsGroup}>
-            <label style={{ fontSize: 13, color: '#a1a1aa' }}>模式视图:</label>
-            <select
-              className={`${styles.select} ${styles.viewSelect}`}
-              value={viewMode}
-              onChange={(e) => setViewMode(e.target.value as 'chromatic' | 'major' | 'minor')}
-            >
-              <option value="chromatic">🎹 十二平均律 (全展开)</option>
-              <option value="major">☀️ 大调音阶 (Ionian)</option>
-              <option value="minor">🌧️ 自然小调 (Aeolian)</option>
-            </select>
-
-            <label style={{ fontSize: 13, color: '#a1a1aa', marginLeft: 5 }}>绝对调高:</label>
-            <select
-              className={styles.select}
-              value={keyNote}
-              onChange={(e) => setKeyNote(parseFloat(e.target.value))}
-            >
-              <option value={261.63}>C4</option>
-              <option value={293.66}>D4</option>
-              <option value={329.63}>E4</option>
-              <option value={440}>A4</option>
-            </select>
-
-            <label style={{ fontSize: 13, color: '#a1a1aa' }}>BPM:</label>
-            <input
-              type="number"
-              className={styles.numberInput}
-              value={bpm}
-              min={40}
-              max={240}
-              onChange={(e) => setBpm(parseInt(e.target.value) || 95)}
-            />
-
-            <label style={{ fontSize: 13, color: '#a1a1aa' }}>精度:</label>
-            <select
-              className={styles.select}
-              value={stepsPerBeat}
-              onChange={(e) => setStepsPerBeat(parseInt(e.target.value))}
-            >
-              <option value={4}>1/16 音符</option>
-              <option value={2}>1/8 音符</option>
-            </select>
-          </div>
-
-          <div
-            className={styles.settingsGroup}
-            style={{ borderLeft: '1px solid #3f3f46', paddingLeft: 15 }}
-          >
-            <label style={{ fontSize: 13, color: '#d8b4fe', fontWeight: 'bold' }}>出题下限:</label>
-            <select
-              className={`${styles.select} ${styles.rangeSelect}`}
-              value={minRange}
-              onChange={(e) => setMinRange(parseInt(e.target.value))}
-            >
-              {PITCH_SPACE.map((p) => (
-                <option key={p.offset} value={p.offset}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-
-            <label style={{ fontSize: 13, color: '#d8b4fe', fontWeight: 'bold', marginLeft: 5 }}>
-              出题上限:
-            </label>
-            <select
-              className={`${styles.select} ${styles.rangeSelect}`}
-              value={maxRange}
-              onChange={(e) => setMaxRange(parseInt(e.target.value))}
-            >
-              {PITCH_SPACE.map((p) => (
-                <option key={p.offset} value={p.offset}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className={styles.btnGroup}>
-            <button className={`${styles.btn} ${styles.btnRandom}`} onClick={generateRandomExercise}>
-              🎲 随机视唱出题
-            </button>
-            <button className={`${styles.btn} ${styles.btnClear}`} onClick={clearGrid}>
-              🗑️ 清空
-            </button>
-            <button
-              className={`${styles.btn} ${isPlayingRef.current ? styles.btnStop : styles.btnPlay}`}
-              onClick={togglePlay}
-            >
-              {isPlayingRef.current ? '⏹ 停止' : '▶ 播放 (Space)'}
-            </button>
-          </div>
-        </div>
-
-        <div className={styles.helpTips}>
-          🎯 <b>动态视唱调校：</b> 如果觉得高音唱不上去，可在上方<b>&ldquo;出题上限&rdquo;</b>和
-          <b>&ldquo;出题下限&rdquo;</b>中框定你的舒适声带区。生成引擎会自动将随机线条禁锢在该绝对范围内。
-        </div>
-
-        <div className={styles.sequencerWrapper}>
-          <div className={styles.rowLabels}>
-            {visiblePitches.map((pitch, i) => (
-              <div
-                key={pitch.offset}
-                className={`${styles.labelCell} ${pitch.isBlack ? styles.labelCellBlack : ''} ${pitch.isRoot ? styles.labelCellRoot : ''}`}
-                onMouseDown={() => {
-                  if (!audioCtxRef.current) audioCtxRef.current = getAudioContext();
-                  const ctx = audioCtxRef.current;
-                  if (ctx.state === 'suspended') ctx.resume();
-                  const freq = keyNote * Math.pow(2, pitch.offset / 12);
-                  playTone(ctx, freq, ctx.currentTime, 0.35);
+        {/* --- 工具栏：时值选择与全局控制 --- */}
+        <div style={{ display: 'flex', gap: 12, marginBottom: 20, padding: 15, background: '#18181c', borderRadius: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', borderRight: '1px solid #3f3f46', paddingRight: 12 }}>
+            <span style={{ color: '#a1a1aa', fontSize: 12 }}>时值:</span>
+            {(['1', '2', '4', '8', '16'] as NoteDuration[]).map(dur => (
+              <button
+                key={dur}
+                onClick={() => setInputDuration(dur)}
+                style={{
+                  padding: '5px 10px',
+                  background: inputDuration === dur ? '#a855f7' : '#2d2d31',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontWeight: inputDuration === dur ? 'bold' : 'normal',
+                  fontSize: 12,
                 }}
               >
-                {pitch.name}
-              </div>
+                1/{dur}
+              </button>
             ))}
           </div>
 
-          <div className={styles.gridContainer}>
-            {visiblePitches.map((pitch) => {
-              const pitchIdx = PITCH_SPACE.indexOf(pitch);
-              return (
-                <div
-                  key={pitch.offset}
-                  className={`${styles.gridRow} ${pitch.isBlack ? styles.gridRowBlack : ''} ${pitch.isRoot ? styles.gridRowRoot : ''}`}
-                >
-                  {Array.from({ length: totalSteps }).map((_, col) => {
-                    const cellData = gridData[pitchIdx]?.[col];
-                    return (
-                      <div
-                        key={col}
-                        className={`${styles.gridCell} ${playingCol === col ? styles.gridCellPlaying : ''}`}
-                        onMouseDown={() => toggleCell(pitchIdx, col)}
-                        onMouseEnter={(e) => {
-                          hoveredCellRef.current = { row: pitchIdx, col };
-                          if (e.buttons === 1 && !(cellData?.active)) {
-                            paintCell(pitchIdx, col);
-                          }
-                        }}
-                        onMouseLeave={() => {
-                          if (hoveredCellRef.current?.row === pitchIdx && hoveredCellRef.current?.col === col) {
-                            hoveredCellRef.current = null;
-                          }
-                        }}
-                      >
-                        {cellData?.active && (
-                          <div
-                            className={`${styles.noteBlock} ${pitch.cls ? (pitch.cls === 'high-zone' ? styles.highZone : pitch.cls === 'low-zone' ? styles.lowZone : styles.rootAnchor) : ''}`}
-                            style={{ '--len': cellData.length } as React.CSSProperties}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
+          <button onClick={() => handleInputEvent('rest')} style={{ padding: '5px 12px', background: '#3f3f46', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+            ⏸ 休止
+          </button>
+          
+          <button onClick={handleBackspace} style={{ padding: '5px 12px', background: '#ef4444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+            ⌫ 撤销
+          </button>
+
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', borderLeft: '1px solid #3f3f46', paddingLeft: 12 }}>
+            <span style={{ color: '#a1a1aa', fontSize: 12 }}>音阶:</span>
+            {([{ key: 'chromatic', label: '全音' }, { key: 'major', label: '大调' }, { key: 'minor', label: '小调' }] as const).map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => setViewMode(opt.key)}
+                style={{
+                  padding: '4px 10px',
+                  background: viewMode === opt.key ? '#60a5fa' : '#2d2d31',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: viewMode === opt.key ? 'bold' : 'normal',
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', borderLeft: '1px solid #3f3f46', paddingLeft: 12 }}>
+            <span style={{ color: '#facc15', fontSize: 12 }}>最低:</span>
+            <select value={pitchMin} onChange={e => setPitchMin(Number(e.target.value))} style={{ background: '#2d2d31', color: '#facc15', border: '1px solid #52525b', borderRadius: 4, padding: '4px 6px', fontSize: 12 }}>
+              {PITCH_SPACE.slice().reverse().map(v => <option key={v.offset} value={v.offset}>{v.name}</option>)}
+            </select>
+            <span style={{ color: '#60a5fa', fontSize: 12 }}>最高:</span>
+            <select value={pitchMax} onChange={e => setPitchMax(Number(e.target.value))} style={{ background: '#2d2d31', color: '#60a5fa', border: '1px solid #52525b', borderRadius: 4, padding: '4px 6px', fontSize: 12 }}>
+              {PITCH_SPACE.slice().reverse().map(v => <option key={v.offset} value={v.offset}>{v.name}</option>)}
+            </select>
+            <button onClick={generateRandomSequence} style={{ padding: '5px 14px', background: '#a855f7', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+              🎲 随机生成
+            </button>
+            <button onClick={() => setBeginnerRhythm(v => !v)} style={{ padding: '5px 10px', background: beginnerRhythm ? '#22c55e' : '#2d2d31', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: beginnerRhythm ? 'bold' : 'normal' }}>
+              {beginnerRhythm ? '✓' : ''} 新手节奏型
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', borderLeft: '1px solid #3f3f46', paddingLeft: 12, marginLeft: 'auto' }}>
+            <span style={{ color: '#a1a1aa', fontSize: 12 }}>BPM:</span>
+            <input type="number" value={bpm} onChange={e => setBpm(Math.max(20, Math.min(200, Number(e.target.value))))} style={{ width: 50, background: '#2d2d31', color: '#4ade80', border: '1px solid #52525b', borderRadius: 4, padding: '4px 6px', fontSize: 12, textAlign: 'center' }} />
+            {!isPlaying ? (
+              <button onClick={startPlayback} style={{ padding: '5px 16px', background: '#22c55e', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+                ▶ 播放
+              </button>
+            ) : (
+              <>
+                <button onClick={togglePause} style={{ padding: '5px 12px', background: isPaused ? '#22c55e' : '#facc15', color: isPaused ? 'white' : '#1c1c1f', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+                  {isPaused ? '▶ 继续' : '⏸ 暂停'}
+                </button>
+                <button onClick={stopPlayback} style={{ padding: '5px 12px', background: '#ef4444', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}>
+                  ⏹ 停止
+                </button>
+              </>
+            )}
+            <button onClick={clearGrid} style={{ padding: '5px 12px', background: '#3f3f46', color: '#e4e4e7', border: '1px solid #52525b', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+              🗑 清空
+            </button>
           </div>
         </div>
+
+        {/* --- 视图区：五线谱渲染 --- */}
+        <div className={styles.staffArea}>
+          <div ref={paperRef}></div>
+        </div>
+
+        {/* --- 输入区：音高键盘 (点击即写入) --- */}
+        <div style={{ background: '#141416', border: '1px solid #2d2d31', borderRadius: 8, padding: 20 }}>
+          <div style={{ color: '#d8b4fe', marginBottom: 12, fontSize: 13, textAlign: 'center' }}>
+            当前正在写入: 第 {currentMeasureIdx + 1} 小节 | 点击下方音高将其作为【1/{inputDuration} 音符】插入乐谱
+          </div>
+
+          {([
+            { key: 'high', label: '高音区', color: '#60a5fa' },
+            { key: 'mid', label: '中音区', color: '#d8b4fe' },
+            { key: 'low', label: '低音区', color: '#facc15' },
+          ] as const).map(({ key, label, color }) => {
+            const pitches = pitchRows[key];
+            if (pitches.length === 0) return null;
+            return (
+              <div key={key} style={{ marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <span style={{ color, fontSize: 12, fontWeight: 'bold', width: 50, flexShrink: 0 }}>{label}</span>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                    {pitches.map((pitch) => (
+                      <div
+                        key={pitch.offset}
+                        onMouseDown={(e) => {
+                          if (e.button === 2) {
+                            e.preventDefault();
+                            if (!audioCtxRef.current) audioCtxRef.current = getAudioContext();
+                            const ctx = audioCtxRef.current;
+                            if (ctx.state === 'suspended') ctx.resume();
+                            const freq = keyNote * Math.pow(2, pitch.offset / 12);
+                            playPianoNote(ctx, freq, ctx.currentTime, 0.4);
+                            return;
+                          }
+                          if (!audioCtxRef.current) audioCtxRef.current = getAudioContext();
+                          const ctx = audioCtxRef.current;
+                          if (ctx.state === 'suspended') ctx.resume();
+                          const freq = keyNote * Math.pow(2, pitch.offset / 12);
+                          playPianoNote(ctx, freq, ctx.currentTime, 0.4);
+                          handleInputEvent('note', pitch.offset);
+                        }}
+                        onContextMenu={(e) => e.preventDefault()}
+                        style={{
+                          width: 52,
+                          height: 36,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          background: pitch.isBlack ? '#18181c' : '#2d2d31',
+                          color: pitch.isRoot ? '#4ade80' : '#e4e4e7',
+                          border: pitch.isRoot ? '1px solid #4ade80' : '1px solid #3f3f46',
+                          borderLeft: pitch.isRoot ? '3px solid #4ade80' : '1px solid #3f3f46',
+                          cursor: 'pointer',
+                          borderRadius: 4,
+                          userSelect: 'none',
+                          fontSize: 12,
+                          fontWeight: pitch.isRoot ? 'bold' : 'normal',
+                          fontFamily: 'monospace',
+                          transition: 'background 0.1s',
+                          flexShrink: 0,
+                        }}
+                        onMouseOver={(e) => e.currentTarget.style.background = '#3b3b40'}
+                        onMouseOut={(e) => {
+                          e.currentTarget.style.background = pitch.isBlack ? '#18181c' : '#2d2d31';
+                        }}
+                      >
+                        {pitch.name}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
       </div>
     </div>
   );
 }
+
+// 维持对 AudioContext 的静默引用以防重复声明
+const audioCtxRef = { current: null as AudioContext | null };

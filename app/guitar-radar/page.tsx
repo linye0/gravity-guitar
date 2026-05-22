@@ -2,13 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { NOTES } from '@/lib/notes';
+import { NOTES, ROOT_NOTES } from '@/lib/notes';
+import { getAudioContext, playTone, clearOscillators } from '@/lib/audio';
 import styles from './page.module.css';
 
-const STRINGS: Record<number, { name: string; rootNoteIdx: number }> = {
-  6: { name: '6弦 (E)', rootNoteIdx: 4 },
-  5: { name: '5弦 (A)', rootNoteIdx: 9 },
-  4: { name: '4弦 (D)', rootNoteIdx: 2 },
+type StringInfo = { name: string; rootNoteIdx: number; octaveMul: number };
+const STRINGS: Record<number, StringInfo> = {
+  6: { name: '6弦 (E)', rootNoteIdx: 4, octaveMul: 0.5 },
+  5: { name: '5弦 (A)', rootNoteIdx: 9, octaveMul: 0.5 },
+  4: { name: '4弦 (D)', rootNoteIdx: 2, octaveMul: 1 },
+  3: { name: '3弦 (G)', rootNoteIdx: 7, octaveMul: 1 },
+  2: { name: '2弦 (B)', rootNoteIdx: 11, octaveMul: 1 },
+  1: { name: '1弦 (E)', rootNoteIdx: 4, octaveMul: 2 },
 };
 
 export default function GuitarRadarPage() {
@@ -21,14 +26,21 @@ export default function GuitarRadarPage() {
   const [thinkTime, setThinkTime] = useState(2000);
   const [ansTime, setAnsTime] = useState(1500);
   const [progressWidth, setProgressWidth] = useState(100);
+  const [playAudio, setPlayAudio] = useState(true);
 
   const phaseStartRef = useRef(0);
   const animFrameRef = useRef<number | null>(null);
   const isPausedRef = useRef(true);
   const currentStateRef = useRef<'THINKING' | 'ANSWERING'>('THINKING');
+  const currentStringRef = useRef(6);
+  const currentNoteIdxRef = useRef(0);
+  const oscRef = useRef<OscillatorNode[]>([]);
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   isPausedRef.current = isPaused;
   currentStateRef.current = currentState;
+  currentStringRef.current = currentString;
+  currentNoteIdxRef.current = currentNoteIdx;
 
   const getFret = useCallback((stringNum: number, noteIdx: number) => {
     const rootIdx = STRINGS[stringNum].rootNoteIdx;
@@ -73,6 +85,16 @@ export default function GuitarRadarPage() {
             if (showAnswer) startPhase('ANSWERING');
             else startPhase('THINKING');
           } else {
+            if (playAudio) {
+              const str = currentStringRef.current;
+              const note = currentNoteIdxRef.current;
+              const info = STRINGS[str];
+              const fretNum = (note - info.rootNoteIdx + 12) % 12;
+              const freq = ROOT_NOTES[info.rootNoteIdx].freq * info.octaveMul * Math.pow(2, fretNum / 12);
+              if (audioCtxRef.current) {
+                playTone(audioCtxRef.current, freq, audioCtxRef.current.currentTime, 1.0, 'sine');
+              }
+            }
             startPhase('THINKING');
           }
         } else {
@@ -82,7 +104,7 @@ export default function GuitarRadarPage() {
 
       animFrameRef.current = requestAnimationFrame(updateProgress);
     },
-    [thinkTime, ansTime, showAnswer, generateNextTarget]
+    [thinkTime, ansTime, showAnswer, generateNextTarget, playAudio]
   );
 
   const togglePlayPause = useCallback(() => {
@@ -91,6 +113,12 @@ export default function GuitarRadarPage() {
       if (next) {
         if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       } else {
+        if (!audioCtxRef.current) {
+          audioCtxRef.current = getAudioContext();
+        }
+        if (audioCtxRef.current.state === 'suspended') {
+          audioCtxRef.current.resume();
+        }
         phaseStartRef.current = performance.now();
         if (document.getElementById('display-note')?.innerText === '--') {
           setTimeout(() => startPhase('THINKING'), 50);
@@ -121,6 +149,10 @@ export default function GuitarRadarPage() {
     setShowAnswer((prev) => !prev);
   }, []);
 
+  const togglePlayAudioMode = useCallback(() => {
+    setPlayAudio((prev) => !prev);
+  }, []);
+
   const syncSlider = useCallback(
     (id: string, increment: number) => {
       if (id === 'think') {
@@ -142,14 +174,26 @@ export default function GuitarRadarPage() {
         case 'a':
           toggleAnswerMode();
           break;
-        case '6':
-          toggleString(6);
+        case 's':
+          togglePlayAudioMode();
+          break;
+        case '1':
+          toggleString(1);
+          break;
+        case '2':
+          toggleString(2);
+          break;
+        case '3':
+          toggleString(3);
+          break;
+        case '4':
+          toggleString(4);
           break;
         case '5':
           toggleString(5);
           break;
-        case '4':
-          toggleString(4);
+        case '6':
+          toggleString(6);
           break;
         case '=':
         case '+':
@@ -169,11 +213,15 @@ export default function GuitarRadarPage() {
     };
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);
-  }, [togglePlayPause, toggleAnswerMode, toggleString, syncSlider]);
+  }, [togglePlayPause, toggleAnswerMode, togglePlayAudioMode, toggleString, syncSlider]);
 
   useEffect(() => {
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      clearOscillators(oscRef);
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close();
+      }
     };
   }, []);
 
@@ -197,7 +245,7 @@ export default function GuitarRadarPage() {
       </Link>
 
       <div className={styles.container}>
-        <h1 className={styles.title}>吉他低音弦根音雷达</h1>
+        <h1 className={styles.title}>吉他指板音练习</h1>
         <div className={styles.subtitle}>切断视觉依赖，建立指板绝对坐标系肌肉记忆</div>
 
         <div className={styles.controlPanel}>
@@ -211,7 +259,7 @@ export default function GuitarRadarPage() {
 
             <div className={styles.toggles}>
               <div className={styles.toggleGroup}>
-                {[6, 5, 4].map((s) => (
+                {[6, 5, 4, 3, 2, 1].map((s) => (
                   <div
                     key={s}
                     className={`${styles.toggleLabel} ${activeStrings.includes(s) ? styles.toggleLabelActive : ''}`}
@@ -227,6 +275,12 @@ export default function GuitarRadarPage() {
                   onClick={toggleAnswerMode}
                 >
                   答案提示 (A)
+                </div>
+                <div
+                  className={`${styles.toggleLabel} ${playAudio ? styles.toggleLabelAudio : ''}`}
+                  onClick={togglePlayAudioMode}
+                >
+                  播放音 (S)
                 </div>
               </div>
             </div>
@@ -297,7 +351,10 @@ export default function GuitarRadarPage() {
             <span className={styles.kbd}>A</span> 答案开关
           </span>
           <span>
-            <span className={styles.kbd}>6/5/4</span> 琴弦开关
+            <span className={styles.kbd}>6/5/4/3/2/1</span> 琴弦开关
+          </span>
+          <span>
+            <span className={styles.kbd}>S</span> 播放音开关
           </span>
           <span>
             <span className={styles.kbd}>+/-</span> 思考时间
