@@ -36,11 +36,21 @@ export default function GuitarRadarPage() {
   const currentNoteIdxRef = useRef(0);
   const oscRef = useRef<OscillatorNode[]>([]);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const thinkTimeRef = useRef(thinkTime);
+  const ansTimeRef = useRef(ansTime);
+  const showAnswerRef = useRef(showAnswer);
+  const playAudioRef = useRef(playAudio);
+  const activeStringsRef = useRef(activeStrings);
 
   isPausedRef.current = isPaused;
   currentStateRef.current = currentState;
   currentStringRef.current = currentString;
   currentNoteIdxRef.current = currentNoteIdx;
+  thinkTimeRef.current = thinkTime;
+  ansTimeRef.current = ansTime;
+  showAnswerRef.current = showAnswer;
+  playAudioRef.current = playAudio;
+  activeStringsRef.current = activeStrings;
 
   const getFret = useCallback((stringNum: number, noteIdx: number) => {
     const rootIdx = STRINGS[stringNum].rootNoteIdx;
@@ -48,12 +58,12 @@ export default function GuitarRadarPage() {
   }, []);
 
   const generateNextTarget = useCallback(() => {
-    const active = activeStrings.length > 0 ? activeStrings : [6];
+    const active = activeStringsRef.current.length > 0 ? activeStringsRef.current : [6];
     const note = Math.floor(Math.random() * 12);
     const strIdx = Math.floor(Math.random() * active.length);
     setCurrentNoteIdx(note);
     setCurrentString(active[strIdx]);
-  }, [activeStrings]);
+  }, []);
 
   const startPhase = useCallback(
     (phaseType: 'THINKING' | 'ANSWERING') => {
@@ -66,9 +76,20 @@ export default function GuitarRadarPage() {
 
       if (phaseType === 'THINKING') {
         generateNextTarget();
-        durationMs = thinkTime;
+        if (playAudioRef.current) {
+          const str = currentStringRef.current;
+          const note = currentNoteIdxRef.current;
+          const info = STRINGS[str];
+          const fretNum = (note - info.rootNoteIdx + 12) % 12;
+          const freq = ROOT_NOTES[info.rootNoteIdx].freq * info.octaveMul * Math.pow(2, fretNum / 12);
+          if (audioCtxRef.current) {
+            const osc = playTone(audioCtxRef.current, freq, audioCtxRef.current.currentTime, 1.0, 'sine');
+            oscRef.current.push(osc);
+          }
+        }
+        durationMs = thinkTimeRef.current;
       } else {
-        durationMs = ansTime;
+        durationMs = ansTimeRef.current;
       }
 
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
@@ -82,19 +103,9 @@ export default function GuitarRadarPage() {
 
         if (elapsed >= durationMs) {
           if (currentStateRef.current === 'THINKING') {
-            if (showAnswer) startPhase('ANSWERING');
+            if (showAnswerRef.current) startPhase('ANSWERING');
             else startPhase('THINKING');
           } else {
-            if (playAudio) {
-              const str = currentStringRef.current;
-              const note = currentNoteIdxRef.current;
-              const info = STRINGS[str];
-              const fretNum = (note - info.rootNoteIdx + 12) % 12;
-              const freq = ROOT_NOTES[info.rootNoteIdx].freq * info.octaveMul * Math.pow(2, fretNum / 12);
-              if (audioCtxRef.current) {
-                playTone(audioCtxRef.current, freq, audioCtxRef.current.currentTime, 1.0, 'sine');
-              }
-            }
             startPhase('THINKING');
           }
         } else {
@@ -104,7 +115,7 @@ export default function GuitarRadarPage() {
 
       animFrameRef.current = requestAnimationFrame(updateProgress);
     },
-    [thinkTime, ansTime, showAnswer, generateNextTarget, playAudio]
+    []
   );
 
   const togglePlayPause = useCallback(() => {

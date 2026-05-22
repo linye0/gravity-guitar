@@ -50,7 +50,7 @@ export function clearOscillators(ref: { current: OscillatorNode[] }) {
   ref.current = [];
 }
 
-export function playTone(ctx: AudioContext, freq: number, startTime: number, durationSeconds: number, type: OscillatorType = 'triangle') {
+export function playTone(ctx: AudioContext, freq: number, startTime: number, durationSeconds: number, type: OscillatorType = 'triangle'): OscillatorNode {
   const osc = ctx.createOscillator();
   const gain = ctx.createGain();
 
@@ -67,6 +67,8 @@ export function playTone(ctx: AudioContext, freq: number, startTime: number, dur
 
   osc.start(startTime);
   osc.stop(startTime + durationSeconds);
+
+  return osc;
 }
 
 export function playPianoNote(ctx: AudioContext, freq: number, startTime: number, durationSeconds: number) {
