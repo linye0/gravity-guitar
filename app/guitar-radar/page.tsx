@@ -61,8 +61,11 @@ export default function GuitarRadarPage() {
     const active = activeStringsRef.current.length > 0 ? activeStringsRef.current : [6];
     const note = Math.floor(Math.random() * 12);
     const strIdx = Math.floor(Math.random() * active.length);
+    const str = active[strIdx];
+    currentNoteIdxRef.current = note;
+    currentStringRef.current = str;
     setCurrentNoteIdx(note);
-    setCurrentString(active[strIdx]);
+    setCurrentString(str);
   }, []);
 
   const startPhase = useCallback(
@@ -83,6 +86,7 @@ export default function GuitarRadarPage() {
           const fretNum = (note - info.rootNoteIdx + 12) % 12;
           const freq = ROOT_NOTES[info.rootNoteIdx].freq * info.octaveMul * Math.pow(2, fretNum / 12);
           if (audioCtxRef.current) {
+            clearOscillators(oscRef);
             const osc = playTone(audioCtxRef.current, freq, audioCtxRef.current.currentTime, 1.0, 'sine');
             oscRef.current.push(osc);
           }
@@ -119,26 +123,24 @@ export default function GuitarRadarPage() {
   );
 
   const togglePlayPause = useCallback(() => {
-    setIsPaused((prev) => {
-      const next = !prev;
-      if (next) {
-        if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      } else {
-        if (!audioCtxRef.current) {
-          audioCtxRef.current = getAudioContext();
-        }
-        if (audioCtxRef.current.state === 'suspended') {
-          audioCtxRef.current.resume();
-        }
-        phaseStartRef.current = performance.now();
-        if (document.getElementById('display-note')?.innerText === '--') {
-          setTimeout(() => startPhase('THINKING'), 50);
-        } else {
-          setTimeout(() => startPhase(currentStateRef.current), 50);
-        }
+    if (isPausedRef.current) {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = getAudioContext();
       }
-      return next;
-    });
+      const doStart = () => {
+        setIsPaused(false);
+        phaseStartRef.current = performance.now();
+        setTimeout(() => startPhase('THINKING'), 50);
+      };
+      if (audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume().then(doStart);
+      } else {
+        doStart();
+      }
+    } else {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      setIsPaused(true);
+    }
   }, [startPhase]);
 
   const toggleString = useCallback(
